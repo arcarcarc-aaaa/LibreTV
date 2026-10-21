@@ -1,4 +1,5 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import dns from 'node:dns/promises';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { POST } from './route';
 import { SESSION_COOKIE, signSession } from '@/lib/auth';
 import type { SearchResponse, SearchStreamEvent, SourceConfig } from '@/lib/types';
@@ -55,7 +56,12 @@ const SOURCES = [
 
 beforeAll(() => {
   process.env.PASSWORD = 'test-password-123';
+  // 上游 fetch 与 DNS 都使用固定测试数据，避免依赖真实网络解析。
+  vi.spyOn(dns, 'resolve4').mockResolvedValue(['8.8.8.8']);
+  vi.spyOn(dns, 'resolve6').mockResolvedValue([]);
 });
+
+afterAll(() => vi.restoreAllMocks());
 
 afterEach(() => {
   vi.unstubAllGlobals();
