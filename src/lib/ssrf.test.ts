@@ -1,5 +1,46 @@
-import { describe, expect, it } from 'vitest';
-import { isPrivateIP, isValidProxyUrl } from './ssrf';
+import dns from 'node:dns/promises';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { isBlockedByDNS, isPrivateIP, isValidProxyUrl } from './ssrf';
+
+describe('DNS 检查在 Workers 中仍然保护私有地址', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('没有 AAAA 时，仍拦截 A 记录中的私有地址', async () => {
+    vi.spyOn(dns, 'resolve4').mockResolvedValue(['192.168.1.1']);
+    vi.spyOn(dns, 'resolve6').mockRejectedValue(new Error('ENODATA'));
+    expect(await isBlockedByDNS('https://private.example/test')).toBe(true);
+  });
+
+  it('A 公开但 AAAA 私有时仍拦截', async () => {
+    vi.spyOn(dns, 'resolve4').mockResolvedValue(['8.8.8.8']);
+    vi.spyOn(dns, 'resolve6').mockResolvedValue(['fd00::1']);
+    expect(await isBlockedByDNS('https://mixed.example/test')).toBe(true);
+  });
+
+  it('仅有公开 A 记录时正常放行', async () => {
+    vi.spyOn(dns, 'resolve4').mockResolvedValue(['8.8.8.8']);
+    vi.spyOn(dns, 'resolve6').mockRejectedValue(new Error('ENODATA'));
+    expect(await isBlockedByDNS('https://public.example/test')).toBe(false);
+  });
+
+  it('两种地址族均无法验证时拒绝，避免静默跳过防护', async () => {
+    vi.spyOn(dns, 'resolve4').mockRejectedValue(new Error('ENOTFOUND'));
+    vi.spyOn(dns, 'resolve6').mockRejectedValue(new Error('ENOTFOUND'));
+    expect(await isBlockedByDNS('https://unknown.example/test')).toBe(true);
+  });
+
+  it('DNS 长时间无响应时在三秒内拒绝，不让请求一直等待', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(dns, 'resolve4').mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(dns, 'resolve6').mockImplementation(() => new Promise(() => {}));
+    const result = isBlockedByDNS('https://slow.example/test');
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(await result).toBe(true);
+  });
+});
 
 describe('isPrivateIP', () => {
   it.each([

@@ -54,15 +54,27 @@ export function isValidProxyUrl(urlString: string): boolean {
 
 /** DNS 解析后校验目标主机名是否解析到内网/保留地址 */
 export async function isBlockedByDNS(urlString: string): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const hostname = stripBrackets(new URL(urlString).hostname);
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':')) {
       return isPrivateIP(hostname);
     }
-    const result = await dns.lookup(hostname, { all: true });
-    return result.some((r) => isPrivateIP(r.address));
+    // Workers 不实现 lookup；resolve4/resolve6 在 Node 与 Workers 均可用。
+    // 单一地址族不存在时仍校验另一族，任意私有地址都必须阻止。
+    const addresses = await Promise.race([
+      Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]).then((results) =>
+        results.flatMap((result) => result.status === 'fulfilled' ? result.value : [])
+      ),
+      new Promise<string[]>((resolve) => {
+        timer = setTimeout(() => resolve([]), 3000);
+      }),
+    ]);
+    return addresses.length === 0 || addresses.some(isPrivateIP);
   } catch {
-    return false; // 解析失败不阻断，交给后续请求处理
+    return true; // 无法验证目标地址时，不跳过 DNS 防护。
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -79,7 +91,7 @@ export async function checkUpstreamAllowed(urlString: string): Promise<UpstreamV
     return { ok: false, reason: '目标地址不在允许范围内（仅支持公网 http/https）' };
   }
   if (await isBlockedByDNS(urlString)) {
-    return { ok: false, reason: '目标地址解析到私有/保留网络' };
+    return { ok: false, reason: '目标地址无法验证，或解析到私有/保留网络' };
   }
   return { ok: true };
 }
